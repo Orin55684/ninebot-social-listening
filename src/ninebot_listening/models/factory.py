@@ -5,17 +5,19 @@ from __future__ import annotations
 import os
 
 from .base import ModelConfigurationError, ModelGateway
+from .company_private import CompanyPrivateConfig, CompanyPrivateGateway
 from .deepseek import DeepSeekConfig, DeepSeekGateway
 
 
 def create_model_gateway(provider: str | None = None) -> ModelGateway:
     """Build the configured model gateway.
 
-    A future company-private adapter can be added here without changing callers.
+    Business code remains independent of the selected provider.
     """
 
     selected = (provider or os.environ.get("MODEL_PROVIDER", "deepseek")).strip()
     if selected == "deepseek":
         return DeepSeekGateway(DeepSeekConfig.from_env())
+    if selected == "company_private":
+        return CompanyPrivateGateway(CompanyPrivateConfig.from_env())
     raise ModelConfigurationError(f"Unsupported model provider: {selected}")
-

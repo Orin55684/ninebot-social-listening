@@ -13,9 +13,9 @@
 - 测试样本必须为模拟数据或获准公开的数据。
 - 新增外部服务时说明数据是否离开公司环境。
 - 修改需求或安全决策时同步更新 `docs/07-决策与待办台账.md`。
-- 提交前运行：`PYTHONPATH=src python3 -m unittest discover -s tests -v`。
+- 使用 Python 3.11 或更高版本。
+- 提交前运行：`PYTHONPATH=src python3.11 -m unittest discover -s tests -v`。
 
 ## 配置
 
 复制 `.env.example` 为本地 `.env` 并在本机填写开发配置。不得把 `.env` 或 API Key 提交到仓库。
-
