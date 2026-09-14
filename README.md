@@ -39,7 +39,7 @@
 
 ## 开发验证
 
-当前代码包含可替换的外部 DeepSeek 与公司私有模型网关，不包含真实数据采集或分析任务。无需真实 API Key 即可运行单元测试：
+当前代码包含可替换模型网关，以及本机历史数据导入、分析、核验和模拟通知演示。实时 API 采集与正式告警尚未接入。无需真实 API Key 即可运行单元测试：
 
 ```bash
 PYTHONPATH=src python3.11 -m unittest discover -s tests -v
