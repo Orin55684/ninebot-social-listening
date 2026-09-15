@@ -45,7 +45,7 @@ class ReplayTests(unittest.TestCase):
     def test_analysis_review_notification_rejection(self):
         replay.add(self.c,'wecom','g','u','1','2026-08-21T01:00:00+08:00','合成：刹车失灵')
         class Gateway:
-            def analyze_json(self,r):return ModelResponse({'topic':'安全','level':'R4','summary':'合成测试待核验','confidence':0.8},'company_private','fixture')
+            def analyze_json(self,r):return ModelResponse({'topic':'安全','level':'R1','summary':'合成测试待核验','confidence':0.8,'issue':'制动异常','vehicle':'M3','intent':'亲历反馈','safety_claim':True,'reason':'明确反馈故障'},'company_private','fixture')
         replay.analyze(self.c,Gateway());replay.aggregate(self.c)
         r=self.c.execute('SELECT * FROM events').fetchone();self.assertEqual(r['level'],'R1')
         self.assertEqual(replay.stats(self.c)['simulated_notifications'],0)

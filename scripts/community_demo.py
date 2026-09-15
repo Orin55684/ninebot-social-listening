@@ -12,6 +12,7 @@ import time
 from urllib.parse import parse_qs
 
 from ninebot_listening import replay
+from ninebot_listening import contextual
 from ninebot_listening.models import CompanyPrivateConfig, CompanyPrivateGateway
 
 
@@ -27,12 +28,19 @@ def load_env(path):
 def render(c, csrf='', active=False):
     esc=lambda v:html.escape(str(v),quote=True)
     counts=replay.stats(c)
+    signals=contextual.signals(c)
     cards=[]
     for row in c.execute('SELECT * FROM events ORDER BY level,day,id'):
         r=dict(row)
-        evidence=c.execute('''SELECT m.time,m.text FROM evidence e JOIN messages m ON e.message_id=m.id
+        evidence=c.execute('''SELECT m.time,m.text,m.quote_text,a.intent,a.reason,a.confidence,a.context_json
+            FROM evidence e JOIN messages m ON e.message_id=m.id JOIN analysis a ON a.message_id=m.id
             WHERE e.event_id=? ORDER BY m.time LIMIT 5''',(r['id'],)).fetchall()
-        quotes=''.join('<li>'+esc(x['time'])+' · '+esc(x['text'])+'</li>' for x in evidence)
+        quotes=''
+        for x in evidence:
+            ctx=json.loads(x['context_json']).get('nearby_messages',[])
+            context_lines=''.join('<li>'+esc(y['time'])+' · 用户 '+esc(y['user_id'][:6])+'：'+esc(y['text'])+'</li>' for y in ctx)
+            quote='<blockquote>引用原话：'+esc(x['quote_text'])+'</blockquote>' if x['quote_text'] else ''
+            quotes+='<li>'+esc(x['time'])+' · '+esc(x['text'])+quote+'<p>表达类型：'+esc(x['intent'])+' · 模型自评置信度：'+esc(x['confidence'])+'</p><p>依据：'+esc(x['reason'])+'</p><details><summary>本次分析所用上下文（'+str(len(ctx))+' 条）</summary><ul>'+context_lines+'</ul></details></li>'
         options=''.join(f'<option {"selected" if level==r["level"] else ""}>{level}</option>' for level in replay.LEVELS)
         form=(f'''<form method="post" action="/review"><input type="hidden" name="csrf" value="{csrf}">
           <input type="hidden" name="event" value="{r['id']}"><select name="level">{options}</select>
@@ -40,7 +48,7 @@ def render(c, csrf='', active=False):
           <button name="decision" value="confirmed">确认事件</button>
           <button class="secondary" name="decision" value="rejected">驳回</button></form>''' if active else '')
         cards.append(f'''<article><small>{esc(r['source'])} · 群 {esc(r['group_id'][:8])} · {esc(r['day'])}</small>
-          <h2>{esc(r['level'])} · {esc(r['topic'])}</h2><p>{esc(r['summary'])}</p>
+          <h2>{esc(r['level'])} · {esc(r['topic'])}</h2><p>{esc(r['issue'])} · 车型 {esc(r['vehicle'])}</p><p>{esc(r['summary'])}</p>
           <p>{r['message_count']} 条依据 · {r['user_count']} 位群内匿名用户 · 状态 {esc(r['review'])}</p>
           <details><summary>查看脱敏证据（最多 5 条）</summary><ul>{quotes}</ul></details>{form}</article>''')
     daily=''.join(f'<tr><td>{esc(r[0])}</td><td>{r[1]}</td><td>{r[2]}</td></tr>' for r in
@@ -48,6 +56,8 @@ def render(c, csrf='', active=False):
     ok=sum(r['n'] for r in counts['analysis'] if r['status']=='ok')
     failed=sum(r['n'] for r in counts['analysis'] if r['status']=='failed')
     sources=' · '.join(f"{esc(r['source'])}：{r['messages']} 条 / {r['groups']} 群 / {r['candidates']} 条规则候选" for r in counts['sources'])
+    links=''.join('<li>'+esc(x['vehicle'])+' · '+esc(x['issue'])+'：'+str(x['groups'])+' 个来源内群标识 / '+str(x['messages'])+' 条反馈</li>' for x in signals['links'])
+    coverage=''.join('<tr>'+''.join('<td>'+esc(x[k])+'</td>' for k in ('day','source','imported','candidates','analyzed','feedback'))+'</tr>' for x in signals['daily'])
     return f'''<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
     <title>九号社群观察 · 历史回放</title><style>
     body{{font:16px/1.65 system-ui,sans-serif;background:#f2f4f7;color:#182532;max-width:1040px;margin:40px auto;padding:0 24px}}
@@ -58,11 +68,16 @@ def render(c, csrf='', active=False):
     button{{background:#176453;color:white;cursor:pointer}}.secondary{{background:white;color:#334}}li{{margin:12px 0;overflow-wrap:anywhere}}
     td,th{{padding:8px 26px 8px 0;text-align:left}}.metrics{{font-size:20px;font-weight:600}}
     </style><header><small>NINEBOT / COMMUNITY LISTENING</small><h1>社群观察 · 历史回放</h1>
-    <p>比赛演示 · 小样本 · 企微群与微信导出 · 通知仅模拟</p></header>
+    <p>比赛演示 V2 · 上下文核验 · 引用区分 · 通知仅模拟</p></header>
     <section><p class="metrics">{ok} 条已分析 · {counts['events']} 个候选 · {counts['simulated_notifications']} 条模拟通知</p>
     <p>{sources}</p><p>分析失败：{failed} 条。抽样优先覆盖风险关键词，不能据此推算整体投诉率或模型召回率。</p>
     <p>脱敏为规则初筛，证据仍可能包含间接身份信息，仅供本机内部评审。微信来源尚未逐群核实民间/官方归属。
-    候选按同来源、同群、同日和同主题归并，尚不代表已核实的同一事件。安全关键词命中会保守提升为 R1 待核验。</p></section>
+    候选按同来源、同群、同日、主题、具体问题和车型归并，仍需核实是否同一事件。安全关键词只提高处理优先级，不直接定为 R1。
+    上下文为已导入样本内前后各 5 分钟、最多 8 条；这是历史回看，不是实时发现时效测试。</p></section>
+    <section><h2>疑似跨群同类问题</h2><ul>{links or '<li>当前已分析样本中暂无满足条件的关联。</li>'}</ul>
+    <p>仅关联明确车型、同一具体问题、亲历或转述反馈。来源内群标识尚未跨来源映射，数量不等于真实独立群数；相似反馈不代表同一事件或传播。</p></section>
+    <section><h2>样本时间分布与分析覆盖</h2><table><tr><th>日期</th><th>来源</th><th>导入</th><th>关键词候选</th><th>已分析</th><th>R1–R3</th></tr>{coverage}</table>
+    <p>{esc(signals['growth_status'])}</p></section>
     <section><h2>历史每日候选概览</h2><table><tr><th>日期</th><th>候选数</th><th>已确认</th></tr>{daily}</table>
     <p>确认 R1/R2 后生成本地模拟通知，驳回会撤销该候选的模拟通知。页面刷新可查看最新计数。</p></section>
     {''.join(cards) or '<section>尚无候选；请先执行历史导入和模型分析。</section>'}</html>'''
@@ -102,12 +117,12 @@ def main():
     os.umask(0o077)
     p=argparse.ArgumentParser()
     p.add_argument('action',choices=['import','analyze','report','serve','status'])
-    p.add_argument('--db',type=Path,default=Path('data/demo/replay.db'))
+    p.add_argument('--db',type=Path,default=Path('data/demo-v2/replay.db'))
     p.add_argument('--wecom',type=Path);p.add_argument('--wechat',type=Path)
     p.add_argument('--start',default='2026-08-21');p.add_argument('--end',default='2026-08-28')
     p.add_argument('--env',default='.env.local');p.add_argument('--limit',type=int,default=40)
     p.add_argument('--approve-historical-demo',action='store_true')
-    p.add_argument('--port',type=int,default=8765)
+    p.add_argument('--port',type=int,default=8766)
     p.add_argument('--request-interval',type=float,default=12)
     a=p.parse_args()
     if a.action=='serve':return serve(a.db,a.port)
@@ -128,7 +143,7 @@ def main():
             load_env(a.env)
             # Invocation-scoped permission for the explicitly authorized historical demo.
             # The persisted production environment flag remains false.
-            config=replace(CompanyPrivateConfig.from_env(),allow_production_data=True,timeout_seconds=15)
+            config=replace(CompanyPrivateConfig.from_env(),allow_production_data=True,timeout_seconds=30)
             if a.limit<1 or not 0<=a.request_interval<=60:raise ValueError('Invalid request budget')
             replay.analyze(c,CompanyPrivateGateway(config),limit=a.limit,request_interval=a.request_interval)
             replay.aggregate(c)
