@@ -141,6 +141,7 @@ class TopicReports:
         with self.connect() as c:c.execute('INSERT INTO plans VALUES (?,?)',(d['id'],json.dumps(d,ensure_ascii=False)))
         return d
     def run_plan(self,pid):
+        if os.environ.get("COMPANY_MODEL_DISABLED_REASON"):raise ValueError(os.environ["COMPANY_MODEL_DISABLED_REASON"])
         with self.connect() as c:r=c.execute('SELECT payload FROM plans WHERE id=?',(pid,)).fetchone()
         if not r:raise KeyError(pid)
         plan=json.loads(r[0])
@@ -170,6 +171,7 @@ class TopicReports:
         if job['status']!='complete':raise ValueError('报告尚未完成')
         return json.loads((self.root/(jid+'.json')).read_text())
     def start(self,data):
+        if os.environ.get("COMPANY_MODEL_DISABLED_REASON"):raise ValueError(os.environ["COMPANY_MODEL_DISABLED_REASON"])
         cfg=config(data)
         with self.guard:
             if self.running:raise ValueError('已有专项报告正在生成，请稍后再试')

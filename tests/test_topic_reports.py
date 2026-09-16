@@ -81,3 +81,14 @@ class TopicTests(unittest.TestCase):
             result=json.load(urllib.request.urlopen(req));self.assertEqual(result['period'],'weekly')
             self.assertEqual(len(json.load(urllib.request.urlopen(base+'/api/topic-report-plans'))['items']),1)
         finally:server.shutdown();server.server_close();thread.join()
+
+class DeploymentAvailabilityTests(unittest.TestCase):
+    def test_disabled_model_creates_no_jobs(self):
+        from unittest.mock import patch
+        from ninebot_listening.topic_reports import TopicReports
+        instance = object.__new__(TopicReports)
+        with patch.dict('os.environ', {'COMPANY_MODEL_DISABLED_REASON': '公司模型网络未连接'}):
+            with self.assertRaisesRegex(ValueError, '公司模型网络未连接'):
+                instance.start({})
+            with self.assertRaisesRegex(ValueError, '公司模型网络未连接'):
+                instance.run_plan('unused')
