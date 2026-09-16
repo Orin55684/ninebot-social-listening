@@ -39,3 +39,10 @@ build/
 .idea/
 .vscode/
 
+
+# Versioned demo web assets and local deployment bundles
+!design-samples/dist/
+!design-samples/dist/**
+*-deploy.tar.gz
+design-samples/*.zip
+design-samples/.openai/

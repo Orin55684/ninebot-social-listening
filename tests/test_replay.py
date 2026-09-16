@@ -15,6 +15,17 @@ class ReplayTests(unittest.TestCase):
         self.c=replay.connect(self.root/'replay.db')
     def tearDown(self):self.c.close();self.tmp.cleanup()
 
+    def test_full_analysis_requires_ids_and_includes_non_candidates_once(self):
+        replay.add(self.c,'suggestions','g','u','plain','2026-08-21T01:00:00+08:00','合成普通建议')
+        self.c.execute('UPDATE messages SET candidate=0')
+        mid=self.c.execute('SELECT id FROM messages').fetchone()[0]
+        class Gateway:
+            def analyze_json(self,r):return ModelResponse({'topic':'安全','level':'R4','summary':'合成普通建议','confidence':0.8,'issue':'其他','vehicle':'未识别','intent':'建议','safety_claim':False,'reason':'未反馈故障'},'company_private','fixture')
+        with self.assertRaises(ValueError):replay.analyze(self.c,Gateway(),include_noncandidates=True)
+        self.assertEqual(replay.analyze(self.c,Gateway(),selected_ids=[mid]),0)
+        self.assertEqual(replay.analyze(self.c,Gateway(),selected_ids=[mid],include_noncandidates=True),1)
+        self.assertEqual(replay.analyze(self.c,Gateway(),selected_ids=[mid],include_noncandidates=True),0)
+
     def test_dedup_scoped_identity_and_redaction(self):
         for _ in range(2):replay.add(self.c,'wecom','g','u','1','2026-08-21T01:00:00+08:00','维修请联系13812345678')
         self.assertEqual(self.c.execute('SELECT count(*) FROM messages').fetchone()[0],1)
@@ -45,7 +56,7 @@ class ReplayTests(unittest.TestCase):
     def test_analysis_review_notification_rejection(self):
         replay.add(self.c,'wecom','g','u','1','2026-08-21T01:00:00+08:00','合成：刹车失灵')
         class Gateway:
-            def analyze_json(self,r):return ModelResponse({'topic':'安全','level':'R4','summary':'合成测试待核验','confidence':0.8},'company_private','fixture')
+            def analyze_json(self,r):return ModelResponse({'topic':'安全','level':'R1','summary':'合成测试待核验','confidence':0.8,'issue':'制动异常','vehicle':'M3','intent':'亲历反馈','safety_claim':True,'reason':'明确反馈故障'},'company_private','fixture')
         replay.analyze(self.c,Gateway());replay.aggregate(self.c)
         r=self.c.execute('SELECT * FROM events').fetchone();self.assertEqual(r['level'],'R1')
         self.assertEqual(replay.stats(self.c)['simulated_notifications'],0)
