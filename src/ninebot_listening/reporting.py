@@ -75,7 +75,7 @@ def detail_rows(c, ids):
         return []
     rows = c.execute('SELECT '+SELECT+JOIN+' WHERE m.id IN ('+','.join('?' for _ in ids)+')', ids)
     by_id = {row['id']: row for row in rows}
-    return [by_id[id] for id in ids]
+    return [by_id[id] for id in ids if id in by_id]
 
 
 def item(row):
@@ -97,16 +97,22 @@ def windows(f,period):
 
 
 class Reporting:
-    def __init__(self,replay_path,state_path):
+    def __init__(self,replay_path,state_path,clock=None):
+        self.clock=clock
         self.path = Path(replay_path)
         p = Path(state_path); self.state = p.with_name(p.stem+'-reports.db')
 
     @contextmanager
-    def source(self):
+    def source(self,cutoff=None):
         c = None
         try:
             c = sqlite3.connect(self.path.resolve().as_uri()+'?mode=ro',uri=True,timeout=1.0)
             c.row_factory = sqlite3.Row
+            cutoff=cutoff or (self.clock.now() if self.clock else None)
+            if cutoff:
+                # TEMP view applies the same time boundary to every query and export.
+                safe=dt.datetime.fromisoformat(cutoff).isoformat().replace("'", "''")
+                c.execute("CREATE TEMP VIEW messages AS SELECT * FROM main.messages WHERE time<='"+safe+"'")
             c.execute('PRAGMA query_only=ON')
             c.execute('SELECT '+SELECT+JOIN+' LIMIT 0')
             c.execute('SELECT id,level1,level2,level3,level4,description,department,domain,product_lines,path FROM business_taxonomy LIMIT 0')
@@ -133,14 +139,16 @@ class Reporting:
     def get(self,table,id):
         with self.saved() as c: row = c.execute('SELECT payload FROM '+table+' WHERE id=?',(id,)).fetchone()
         if row is None: raise KeyError(id)
-        return json.loads(row[0])
+        d=json.loads(row[0])
+        if table=='reports' and self.clock and (d.get('as_of') or d['filters']['end']+'T23:59:59+08:00')>self.clock.now():raise KeyError(id)
+        return d
 
     def options(self):
         with self.source() as c:
             taxonomy = [dict(r) for r in c.execute("SELECT * FROM business_taxonomy ORDER BY path,id")]
-            return {'range':{'start':'2026-08-01','end':'2026-08-31'}, 'sources':[{'id':k,'label':v} for k,v in SOURCES.items()],
+            return {'range':{'start':'2026-08-01','end':self.clock.now()[:10] if self.clock else '2026-08-31'}, 'sources':[{'id':k,'label':v} for k,v in SOURCES.items()],
                 'channels':[r[0] for r in c.execute("SELECT DISTINCT channel FROM original_records WHERE channel IS NOT NULL AND channel!='' ORDER BY channel")],
-                'topics': sorted({r['level1'] for r in taxonomy if r['level1']}|{'未分类'}), 'taxonomy':taxonomy}
+                'topics': sorted({r['level1'] for r in taxonomy if r['level1']}|{'未分类'}), 'taxonomy':[] if self.clock else taxonomy}
 
     def summary(self,c,f):
         sql,args=where(f)
@@ -156,7 +164,7 @@ class Reporting:
         sql,args=where(f)
         with self.source() as c:
             summary=self.summary(c,f)
-            ids=[r[0] for r in c.execute('SELECT m.id'+query_from(f)+sql+' ORDER BY m.time,m.id LIMIT ? OFFSET ?',args+[size,(page-1)*size])]
+            ids=[r[0] for r in c.execute('SELECT m.id'+query_from(f)+sql+' ORDER BY m.time DESC,m.id DESC LIMIT ? OFFSET ?',args+[size,(page-1)*size])]
             rows=detail_rows(c,ids)
             return {'total':summary['total'],'items':[item(r) for r in rows],'summary':summary,'page':page,'page_size':size}
 
@@ -204,6 +212,8 @@ class Reporting:
     def generate(self,data):
         if not isinstance(data,dict): raise ValueError('请求须为对象')
         title=data.get('title','周期专项报告'); period=data.get('period','custom'); f=filters(data.get('filters'))
+        if self.clock:f['end']=min(f['end'],self.clock.now()[:10])
+        if f['start']>f['end']:raise ValueError('所选时间尚未到达')
         if not isinstance(title,str) or not title.strip() or len(title)>300: raise ValueError('标题须为1至300字符')
         spans=list(windows(f,period)); sql,args=where(f)
         with self.source() as c:
@@ -218,7 +228,7 @@ class Reporting:
                 'summary':totals(grouped), 'buckets':[dict(start=lo,end=hi,**totals([r for r in grouped if lo<=r['day']<=hi])) for lo,hi in spans],
                 'sources':[dict(source=s,**totals([r for r in grouped if r['source']==s])) for s in SOURCES if not f['source'] or f['source']==s],
                 'evidence':[item(r) for r in detail_rows(c,evidence_ids)],
-                'created_at':dt.datetime.now(dt.timezone.utc).isoformat(),
+                'created_at':(self.clock.now() if self.clock else dt.datetime.now(dt.timezone.utc).isoformat()),'as_of':self.clock.now() if self.clock else None,
                 'limits':['统计单位为消息，非事件；分析成功不等于人工核验。','unanalyzed仅无分析记录；analysis_other为失败或其他非成功状态。','已分析风险仅analysis.status=ok且R1/R2/R3；未分析原始候选不计入风险，不依赖events；不得外推全量风险率。','最多5条原文摘录；可通过消息CSV/JSON导出全部匹配原文及源字段。','每消息仅一个主标签；词面规则待核实，不是人工最终标签；未匹配保留未分类。']}
             for d in report['evidence']:
                 for key in ('text','quote_text','raw_text','raw_quote'): d[key]=(d.get(key) or '')[:500]
@@ -233,16 +243,23 @@ class Reporting:
             if not isinstance(data.get(k),str) or not data[k].strip() or len(data[k])>300: raise ValueError(k+'须为1至300字符')
         with self.source(): pass
         d={k:data[k] for k in ('name','title','period')}
-        d.update(id=uuid.uuid4().hex,filters=f,created_at=dt.datetime.now(dt.timezone.utc).isoformat(),last_run=None)
+        d.update(id=uuid.uuid4().hex,filters=f,created_at=(self.clock.now() if self.clock else dt.datetime.now(dt.timezone.utc).isoformat()),last_run=None)
         self.put('schedules',d); return {'schedule':d}
 
     def schedules(self):
         with self.source(): pass
-        with self.saved() as c: return {'items':[json.loads(r[0]) for r in c.execute('SELECT payload FROM schedules ORDER BY rowid DESC')]}
+        with self.saved() as c: items=[json.loads(r[0]) for r in c.execute('SELECT payload FROM schedules ORDER BY rowid DESC')]
+        if self.clock:
+            for d in items:
+                if d.get('last_run') and (not d['last_run'].get('as_of') or d['last_run']['as_of']>self.clock.now()):d['last_run']=None
+        return {'items':items}
 
     def run(self,id):
         schedule=self.get('schedules',id)
-        run={'id':uuid.uuid4().hex,'schedule_id':id,'mode':'historical_simulation','notice':NOTICE,'started_at':dt.datetime.now(dt.timezone.utc).isoformat(),'logs':[],'report_ids':[]}
+        effective=dict(schedule['filters'])
+        if self.clock:effective['end']=min(effective['end'],self.clock.now()[:10])
+        if effective['start']>effective['end']:raise ValueError('所选周期尚未到达')
+        run={'as_of':self.clock.now() if self.clock else None,'id':uuid.uuid4().hex,'schedule_id':id,'mode':'historical_simulation','notice':NOTICE,'started_at':(self.clock.now() if self.clock else dt.datetime.now(dt.timezone.utc).isoformat()),'logs':[],'report_ids':[]}
         successful=[]
         for source in SOURCES:
             try:
@@ -255,17 +272,17 @@ class Reporting:
             if len(successful)!=4:
                 run['logs'].append({'stage':'filter','status':'failed','count':None,'error':'来源读取不完整，未执行过滤'})
                 raise Unavailable('来源读取不完整，本次不生成可能不完整的报告')
-            with self.source() as c: count=self.count(c,schedule['filters'])
+            with self.source() as c: count=self.count(c,effective)
             run['logs'].append({'stage':'filter','status':'complete','count':count})
-            for lo,hi in windows(schedule['filters'],schedule['period']):
-                result=self.generate(dict(title=schedule['title'],period=schedule['period'],filters=dict(schedule['filters'],start=lo,end=hi)))
+            for lo,hi in windows(effective,schedule['period']):
+                result=self.generate(dict(title=schedule['title'],period=schedule['period'],filters=dict(effective,start=lo,end=hi)))
                 run['report_ids'].append(result['id'])
             run['logs'].append({'stage':'report','status':'complete','count':len(run['report_ids'])})
             run['status']='complete'
         except (Unavailable,sqlite3.Error) as exc:
             run['logs'].append({'stage':'report','status':'failed','count':len(run['report_ids']),'error':str(exc)})
             run['status']='partial' if successful or run['report_ids'] else 'failed'
-        run['finished_at']=dt.datetime.now(dt.timezone.utc).isoformat(); schedule['last_run']=run; self.put('schedules',schedule)
+        run['finished_at']=(self.clock.now() if self.clock else dt.datetime.now(dt.timezone.utc).isoformat()); schedule['last_run']=run; self.put('schedules',schedule)
         return {'run':run}
 
 

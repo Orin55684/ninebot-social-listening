@@ -61,3 +61,5 @@ PYTHONPATH=src python3.11 scripts/check_company_model.py
 配置说明见 `.env.example`。在生产治理清单未完成前，保持 `COMPANY_MODEL_ALLOW_PRODUCTION_DATA=false`。个人 DeepSeek 仍只允许处理模拟或公开数据。
 
 - [专项分析报告自动生成](docs/13-专项分析报告自动生成.md)：按需求生成液态玻璃交互报告，含模型洞察、原文证据和专项周期配置。
+
+- [八月模拟运行与官方报告模型](docs/15-八月模拟运行与官方报告模型.md)

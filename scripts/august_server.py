@@ -17,9 +17,13 @@ for source_root in (Path(__file__).resolve().parent/'src', Path(__file__).resolv
 from ninebot_listening.reporting import Reporting, Unavailable, report_html
 from ninebot_listening.topic_reports import TopicReports, render as topic_html, export_csv as topic_csv
 
-def application(snapshot_path,state_path,assets,replay_path=None):
-    reporting=Reporting(replay_path or Path(snapshot_path).parent/'replay.db',state_path)
+from ninebot_listening.simulation import SimulationClock, Simulation
+
+def application(snapshot_path,state_path,assets,replay_path=None,simulation=False):
+    clock=SimulationClock(Path(state_path).parent/"simulation.db") if simulation else None
+    reporting=Reporting(replay_path or Path(snapshot_path).parent/'replay.db',state_path,clock)
     topic_reports=TopicReports(reporting)
+    sim=Simulation(reporting,clock) if clock else None
     snapshot=json.loads(Path(snapshot_path).read_text())
     csrf=secrets.token_urlsafe(32)
     @contextmanager
@@ -58,6 +62,10 @@ def application(snapshot_path,state_path,assets,replay_path=None):
                 query=parse_qs(urlsplit(self.path).query,keep_blank_values=True)
                 if any(len(v)!=1 for v in query.values()):raise ValueError('筛选仅支持单值')
                 params={k:v[0] for k,v in query.items()}
+                if path=='/api/clock' and clock:return self.send(200,clock.state())
+                if path=='/api/risks' and sim:
+                    with db() as c:reviews={r['event_id']:dict(r) for r in c.execute('SELECT * FROM reviews') if not clock or r['updated_at']<=clock.now()}
+                    return self.send(200,dict(sim.risks(params,reviews),reviews=reviews))
                 if path=='/api/topic-report-plans':return self.send(200,topic_reports.plans())
                 if path=='/api/topic-reports':return self.send(200,topic_reports.list())
                 if path.startswith('/api/topic-reports/'):
@@ -87,11 +95,13 @@ def application(snapshot_path,state_path,assets,replay_path=None):
                     return self.download([body],'text/html; charset=utf-8' if fmt=='html' else 'application/json; charset=utf-8','report.'+fmt)
             except (ValueError,TypeError,KeyError,Unavailable,sqlite3.Error,OSError) as exc:return self.report_error(exc)
             if path=='/api/snapshot':
-                data=json.loads(Path(snapshot_path).read_text())
+                data=sim.dashboard() if sim else json.loads(Path(snapshot_path).read_text())
                 with db() as c:
-                    data['reviews']={r['event_id']:dict(r) for r in c.execute('SELECT * FROM reviews')}
+                    data['reviews']={r['event_id']:dict(r) for r in c.execute('SELECT * FROM reviews') if not clock or r['updated_at']<=clock.now()}
                     data['history']=[dict(r) for r in c.execute('SELECT * FROM history ORDER BY id DESC LIMIT 30')]
                     data['simulated_outbox']=[dict(r) for r in c.execute('SELECT * FROM simulated_outbox ORDER BY created_at DESC')]
+                if clock:
+                    data['history']=[r for r in data['history'] if r['updated_at']<=clock.now()]
                 data['csrf']=csrf
                 return self.send(200,data)
             files={'/assets/topic-studio.js':'topic-studio.js','/':'august.html','/assets/august.js':'august.js','/assets/august.css':'august.css','/assets/blue-v2.css':'blue-v2.css'}
@@ -102,7 +112,7 @@ def application(snapshot_path,state_path,assets,replay_path=None):
         def do_POST(self):
             path=urlsplit(self.path).path
             is_report=(path.startswith('/api/topic-report-plans/') and path.endswith('/run')) or path in ('/api/topic-report-plans','/api/topic-reports','/api/reports/generate','/api/report-schedules') or (path.startswith('/api/report-schedules/') and path.endswith('/run'))
-            if path!='/api/review' and not is_report:return self.send(404,{'error':'Not found'})
+            if path not in ('/api/review','/api/clock') and not is_report:return self.send(404,{'error':'Not found'})
             if not secrets.compare_digest(self.headers.get('X-CSRF-Token','').encode('utf-8'),csrf.encode('utf-8')):return self.send(403,{'error':'Invalid CSRF token'})
             if self.headers.get('Content-Type','').split(';')[0]!='application/json':return self.send(415,{'error':'JSON required'})
             try:
@@ -110,6 +120,7 @@ def application(snapshot_path,state_path,assets,replay_path=None):
                 if not 0<n<=12000:raise ValueError()
                 d=json.loads(self.rfile.read(n))
                 if not isinstance(d,dict):raise ValueError('请求须为JSON对象')
+                if path=='/api/clock' and clock:return self.send(200,clock.update(d))
                 if is_report:
                     if path=='/api/topic-report-plans':result=topic_reports.save_plan(d)
                     elif path.startswith('/api/topic-report-plans/'):result=topic_reports.run_plan(path.split('/')[3])
@@ -119,9 +130,9 @@ def application(snapshot_path,state_path,assets,replay_path=None):
                     else:result=reporting.run(path.split('/')[3])
                     return self.send(200,result)
                 eid=d['event_id'];decision=d['decision'];level=d['level'];note=d['note']
-                if eid not in {r['id'] for r in json.loads(Path(snapshot_path).read_text())['events']} or decision not in ('confirmed','rejected') or level not in ('R1','R2','R3','R4'):raise ValueError()
+                if not (sim.valid_risk(eid) if sim else eid in {r['id'] for r in json.loads(Path(snapshot_path).read_text())['events']}) or decision not in ('confirmed','rejected') or level not in ('R1','R2','R3','R4'):raise ValueError()
                 if not isinstance(note,str) or not 1<=len(note.strip())<=1000:raise ValueError()
-                now=dt.datetime.now(dt.timezone.utc).isoformat()
+                now=clock.now() if clock else dt.datetime.now(dt.timezone.utc).isoformat()
                 with db() as c:
                     c.execute('INSERT OR REPLACE INTO reviews VALUES (?,?,?,?,?)',(eid,decision,level,note.strip(),now))
                     c.execute('INSERT INTO history(event_id,decision,level,note,updated_at) VALUES (?,?,?,?,?)',(eid,decision,level,note.strip(),now))
@@ -138,4 +149,4 @@ if __name__=='__main__':
     import os
     os.umask(0o077)
     p=argparse.ArgumentParser();p.add_argument('--snapshot',required=True);p.add_argument('--state',required=True);p.add_argument('--replay-db');p.add_argument('--assets',required=True);p.add_argument('--port',type=int,default=8881);a=p.parse_args()
-    ThreadingHTTPServer(('127.0.0.1',a.port),application(a.snapshot,a.state,a.assets,a.replay_db)).serve_forever()
+    ThreadingHTTPServer(('127.0.0.1',a.port),application(a.snapshot,a.state,a.assets,a.replay_db,simulation=True)).serve_forever()
