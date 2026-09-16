@@ -47,6 +47,8 @@ class RiskReplayTests(unittest.TestCase):
             self.assertFalse({x['id'] for x in first['items']}&{x['id'] for x in second['items']});self.assertGreater(first['items'][0]['time'],second['items'][0]['time'])
             self.assertEqual(sim.risks({'level':'R1'}, {})['total'],0)
             clock.update({'action':'advance','seconds':3600});self.assertEqual(sim.risks({'level':'R1'}, {})['total'],1)
+            self.assertEqual(sim.risks({'level':'R1','as_of':START.isoformat()}, {})['total'],0)
+            self.assertEqual(sim.risks({'as_of':START.isoformat()}, {})['total'],45)
             clock.update({'action':'advance','seconds':86400});self.assertEqual(sim.dashboard()['metrics']['voices24'],0)
 
 class OfficialReportPolicyTests(unittest.TestCase):

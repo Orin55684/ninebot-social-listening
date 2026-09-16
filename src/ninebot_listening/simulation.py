@@ -56,7 +56,13 @@ class Simulation:
     def risks(self,params,reviews):
         level=params.get('level','');source=params.get('source','');status=params.get('status','');q=params.get('q','').strip().lower();page=int(params.get('page',1))
         if level not in ('','R1','R2','R3','R4') or source not in ('',*SOURCES) or status not in ('','pending','confirmed','rejected') or page<1:raise ValueError('筛选条件无效')
-        with self.reporting.source() as c:
+        cutoff=params.get('as_of') or self.clock.now()
+        try:
+            stamp=dt.datetime.fromisoformat(cutoff)
+            if stamp.tzinfo is None:raise ValueError()
+            cutoff=min(stamp.astimezone(TZ),dt.datetime.fromisoformat(self.clock.now())).isoformat()
+        except (ValueError,TypeError):raise ValueError('数据截止时间无效')
+        with self.reporting.source(cutoff=cutoff) as c:
             found=[]
             for r in c.execute("SELECT m.id,m.time,m.source,a.* FROM analysis a JOIN messages m ON m.id=a.message_id WHERE a.status='ok' AND a.level IN ('R1','R2','R3') ORDER BY m.time DESC,m.id DESC"):
                 r=dict(r);review=reviews.get('message:'+r['id'],{})
@@ -71,7 +77,7 @@ class Simulation:
         for r in selected:
             v=originals[r['id']];v.update(message_id=r['id'],intent=r['intent'],reason=r['reason'],confidence=r['confidence'],context_json='{}')
             events.append(dict(id='message:'+r['id'],source=r['source'],day=r['time'],time=r['time'],topic=r['topic'],issue=r['issue'],vehicle=r['vehicle'],level=r['level'],summary=r['summary'],analysis_status='analysed',evidence=[v],taxonomy=[]))
-        return {'items':events,'total':total,'page':page,'page_size':20,'pages':pages}
+        return {'items':events,'total':total,'page':page,'page_size':20,'pages':pages,'as_of':cutoff}
     def valid_risk(self,eid):
         if not eid.startswith('message:'):return False
         with self.reporting.source() as c:
