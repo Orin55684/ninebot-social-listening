@@ -104,7 +104,7 @@ def application(snapshot_path,state_path,assets,replay_path=None,simulation=Fals
                     data['history']=[r for r in data['history'] if r['updated_at']<=clock.now()]
                 data['csrf']=csrf
                 return self.send(200,data)
-            files={'/assets/topic-studio.js':'topic-studio.js','/':'august.html','/assets/august.js':'august.js','/assets/august.css':'august.css','/assets/blue-v2.css':'blue-v2.css'}
+            files={'/assets/glass-select.js':'glass-select.js','/assets/topic-studio.js':'topic-studio.js','/':'august.html','/assets/august.js':'august.js','/assets/august.css':'august.css','/assets/blue-v2.css':'blue-v2.css'}
             if path not in files:return self.send(404,{'error':'Not found'})
             name=files[path];content=(Path(assets)/name).read_bytes()
             kind='text/html' if name.endswith('.html') else 'text/css' if name.endswith('.css') else 'text/javascript'
