@@ -1,0 +1,20 @@
+[Unit]
+Description=Ninebot August private historical demo
+After=network.target
+
+[Service]
+User=listeningdemo
+Group=listeningdemo
+WorkingDirectory=/opt/ninebot-listening-august
+ExecStart=/usr/bin/python3 /opt/ninebot-listening-august/scripts/august_server.py --snapshot /opt/ninebot-listening-august/snapshot.json --state /var/lib/ninebot-listening-august/reviews.db --assets /opt/ninebot-listening-august/design-samples/dist --port 8881
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/ninebot-listening-august
+
+[Install]
+WantedBy=multi-user.target

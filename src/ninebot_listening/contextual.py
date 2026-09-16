@@ -11,6 +11,14 @@ VERSION = 'context-v2'
 
 
 def context_for(c, target):
+    if target['source']=='suggestions':
+        return {'target':{k:target[k] for k in ('id','time','user_id','text','quote_text')},
+                'nearby_messages':[],
+                'limitations':'意见建议单条反馈；其他反馈不是对话上下文。来源处理状态不代表本系统已核验风险。'}
+    if target['source']=='voc':
+        return {'target':{k:target[k] for k in ('id','time','user_id','text','quote_text')},
+                'nearby_messages':[],
+                'limitations':'VOC独立内容；评论无父帖和回复上下文，禁止拼接同链接的其他评论。VOC负面已研判不等于本系统确认风险。'}
     timestamp=dt.datetime.fromisoformat(target['time'])
     lo=(timestamp-dt.timedelta(minutes=5)).isoformat()
     hi=(timestamp+dt.timedelta(minutes=5)).isoformat()

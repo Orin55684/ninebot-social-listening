@@ -146,16 +146,25 @@ def import_wechat(c, directory, start, end, per_group=50, limit=3000):
     c.commit(); return {'imported':imported,'invalid':invalid}
 
 
-def analyze(c, gateway, limit=40, request_interval=0):
+def analyze(c, gateway, limit=40, request_interval=0, selected_ids=None, include_noncandidates=False):
     """One request per message, persistent checkpoints, no external fallback."""
     if c.execute("SELECT 1 FROM analysis WHERE status='ok' AND version!=? LIMIT 1",(contextual.VERSION,)).fetchone():
         raise ValueError('Use a separate V2 database; existing V1 reviews are preserved')
+    selection=''
+    params=[]
+    if selected_ids is not None:
+        if not selected_ids:return 0
+        selection=' AND m.id IN ('+','.join('?' for _ in selected_ids)+')'
+        params=list(selected_ids)
+    if include_noncandidates and selected_ids is None:
+        raise ValueError('Full analysis requires explicit message IDs')
+    candidate_filter = '1=1' if include_noncandidates else 'm.candidate=1'
     rows = c.execute('''SELECT m.* FROM messages m LEFT JOIN analysis a ON m.id=a.message_id
-       WHERE m.candidate=1 AND (a.status IS NULL OR a.status='failed')
-       ORDER BY m.safety DESC,m.time,m.id''').fetchall()
+       WHERE '''+candidate_filter+''' AND (a.status IS NULL OR a.status='failed')
+       '''+selection+' ORDER BY m.safety DESC,m.time,m.id',params).fetchall()
     # Balance channels so one larger source does not exhaust the demo budget.
     queues = {s:collections.deque(r for r in rows if r['source']==s)
-              for s in ('wecom','wechat_export')}
+              for s in sorted({r['source'] for r in rows})}
     selected=[]
     while len(selected)<limit and any(queues.values()):
         for q in queues.values():
